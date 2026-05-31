@@ -12,6 +12,13 @@ services:
       # Cookbook local model cache. Inside Docker, "Local" means the Odysseus
       # container, so persist its HuggingFace cache under ./data/huggingface.
       - ./data/huggingface:/app/.cache/huggingface
+      # AWS credentials + SSO token cache. Required for the Bedrock provider.
+      # Run `aws sso login --profile <name>` on the host; boto3 inside the
+      # container reads the cached short-lived token from this directory and
+      # refreshes role creds itself. Re-run `aws sso login` on the host when
+      # the SSO session expires (8h default). Safe to leave mounted even if
+      # you don't use Bedrock — boto3 only reads it on demand.
+      - ${HOME}/.aws:/app/.aws
     env_file:
       - .env
     environment:
@@ -28,6 +35,11 @@ services:
       # Find yours with:  id -u  /  id -g
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      # gosu preserves env and does NOT reset HOME, so without this the
+      # dropped process keeps HOME=/root and botocore looks for AWS config
+      # at /root/.aws (empty). Point HOME at /app so ~/.aws resolves to the
+      # mounted /app/.aws (config + sso/cache).
+      - HOME=/app
     depends_on:
       searxng:
         condition: service_healthy

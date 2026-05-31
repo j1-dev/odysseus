@@ -259,7 +259,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
                 ).first()
                 if ep:
                     base = _normalize_base(ep.base_url)
-                    endpoint_url = build_chat_url(base)
+                    endpoint_url = build_chat_url(base, ep.api_key)
                     model = default_model
                     if not model and ep.models:
                         try:

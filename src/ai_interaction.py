@@ -99,7 +99,30 @@ def _resolve_model(spec: str) -> Tuple[str, str, Dict]:
             if ep.api_key:
                 headers["Authorization"] = f"Bearer {ep.api_key}"
 
-            if provider == "anthropic":
+            if provider == "bedrock":
+                # Bedrock: match against discovered model/inference-profile IDs.
+                # The URL carries the AWS profile via ?profile=; boto3 (not an
+                # HTTP header) does auth, so headers stay empty.
+                from src.endpoint_resolver import build_chat_url
+                from src.bedrock_adapter import list_models as _bedrock_list
+                bedrock_url = build_chat_url(base, ep.api_key)
+                try:
+                    model_ids = _bedrock_list(bedrock_url)
+                except Exception:
+                    model_ids = []
+                matched = None
+                for mid in model_ids:
+                    if mid.lower() == model_name.lower():
+                        matched = mid
+                        break
+                if not matched:
+                    for mid in model_ids:
+                        if model_name.lower() in mid.lower() or mid.lower() in model_name.lower():
+                            matched = mid
+                            break
+                if matched:
+                    return bedrock_url, matched, {}
+            elif provider == "anthropic":
                 # Anthropic: match against hardcoded model list
                 matched = None
                 for am in ANTHROPIC_MODELS:

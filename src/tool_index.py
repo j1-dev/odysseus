@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 # These are the most commonly needed and should never be missing.
 ALWAYS_AVAILABLE = frozenset({
     "bash", "python", "web_search", "read_file",
+    # Claude-Code-style code tools — always in reach so coding tasks can
+    # search, locate, and surgically edit files without a keyword nudge.
+    "write_file", "edit_file", "glob", "grep",
     "api_call",  # For configured integrations (Miniflux, Gitea, Linkding, etc.)
     # The two genuinely AMBIENT cookbook tools — "what's running" and
     # "kill it" can be asked any time without prior cookbook context,
@@ -63,7 +66,11 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "python": "Execute Python code for computation, data processing, math, scripting, parsing, API calls. Not for writing code for the user.",
     "web_search": "Quick single web lookup for a fact, current event, or doc mid-task. NOT for 'research X' / 'do research on X' requests — those are deep-research jobs (use trigger_research). web_search = one query; trigger_research = a full researched report in the sidebar.",
     "read_file": "Read a file from disk and return its contents. View source code, config files, logs.",
-    "write_file": "Write content to a file on disk. Create new files, save output, update configs.",
+    "write_file": "Write content to a file on disk. Create new files, save output, update configs. For changing part of an existing file, prefer edit_file.",
+    "edit_file": "Edit a file on disk by exact string replacement (Claude-Code style). Replace old_string with new_string in place — the preferred way to modify existing source files, configs, and scripts. Use for fixing bugs, renaming, adding lines to files on disk.",
+    "glob": "Find files on disk by glob pattern (e.g. '**/*.py', 'src/**/*.js'), newest first. Locate source files by name/extension across the codebase.",
+    "grep": "Search file contents with ripgrep — returns matching lines with file paths and line numbers. Find where a function, string, symbol, or pattern lives in the codebase.",
+    "notebook_edit": "Edit a Jupyter notebook (.ipynb) cell — replace a cell's source, insert a new cell, or delete a cell. Use for changing code/markdown in .ipynb files.",
     "create_document": "Create a new document in the editor panel. For code, articles, text content longer than 15 lines. Specify title, language, and content.",
     "edit_document": "Preferred tool for editing an existing document — targeted find-and-replace. Use for any small change: add a function, fix a bug, tweak a section, rename things.",
     "update_document": "Replace the entire active document content. ONLY for full rewrites (>50% changed). Do not use for small edits — use edit_document instead.",

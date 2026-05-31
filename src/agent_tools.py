@@ -27,6 +27,7 @@ MAX_READ_CHARS = 20_000
 
 # Tool types that trigger execution
 TOOL_TAGS = {"bash", "python", "web_search", "read_file", "write_file",
+             "edit_file", "glob", "grep", "notebook_edit",
              "create_document", "update_document", "edit_document",
              "search_chats",
              "chat_with_model", "create_session", "list_sessions",
@@ -131,4 +132,8 @@ from src.tool_implementations import (  # noqa: E402, F401
     do_manage_documents,
     do_manage_settings,
     do_api_call,
+    do_edit_file,
+    do_glob,
+    do_grep,
+    do_notebook_edit,
 )

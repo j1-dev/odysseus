@@ -67,6 +67,10 @@ DEFAULT_SETTINGS = {
     "agent_max_tool_calls": 0,
     "agent_input_token_budget": 6000,
     "agent_stream_timeout_seconds": 300,
+    # When False, the agent pauses and asks for confirmation before running a
+    # world-mutating tool (edit_file, write_file, notebook_edit, bash, python).
+    # When True (default), those tools run without interruption. Per-user.
+    "auto_accept_edits": True,
     "task_endpoint_id": "",
     "task_model": "",
     "default_endpoint_id": "",
@@ -172,6 +176,9 @@ _PER_USER_KEYS = {
     "default_endpoint_id", "default_model", "default_model_fallbacks",
     "utility_endpoint_id", "utility_model", "utility_model_fallbacks",
     "research_endpoint_id", "research_model",
+    # Whether the agent auto-runs mutating tools or asks first — a personal
+    # safety preference, so each user chooses their own.
+    "auto_accept_edits",
 }
 
 

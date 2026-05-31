@@ -589,10 +589,23 @@ function initEndpointForm() {
     });
   }
 
+  const apiKeyInput = el('adm-epApiKey');
+  function _refreshApiKeyHint() {
+    if (!apiKeyInput) return;
+    if ((provider.value || '').startsWith('bedrock://')) {
+      apiKeyInput.placeholder = 'AWS profile (optional — leave blank for default)';
+      apiKeyInput.type = 'text';
+    } else {
+      apiKeyInput.placeholder = 'API key';
+      apiKeyInput.type = 'password';
+    }
+  }
   provider.addEventListener('change', () => {
     if (provider.value) urlInput.value = provider.value;
     else urlInput.value = '';
+    _refreshApiKeyHint();
   });
+  _refreshApiKeyHint();
   function _normalizeBaseUrl(raw) {
     let u = raw.trim();
     // Fix common protocol typos
@@ -629,9 +642,10 @@ function initEndpointForm() {
     const rawUrl = (provider.value || urlInput.value).trim();
     const apiKey = el('adm-epApiKey').value.trim();
     if (!rawUrl) { msg.textContent = 'Select a provider or enter a base URL'; msg.className = 'admin-error'; return; }
-    if (provider.value && !apiKey) { msg.textContent = 'API key is required for cloud providers'; msg.className = 'admin-error'; return; }
-    // Normalize URL (fix typos, add /v1, strip wrong paths)
-    const url = provider.value ? rawUrl : _normalizeBaseUrl(rawUrl);
+    const isBedrock = (provider.value || rawUrl).startsWith('bedrock://');
+    if (provider.value && !apiKey && !isBedrock) { msg.textContent = 'API key is required for cloud providers'; msg.className = 'admin-error'; return; }
+    // Normalize URL (fix typos, add /v1, strip wrong paths) — bedrock:// passes through.
+    const url = (provider.value || isBedrock) ? rawUrl : _normalizeBaseUrl(rawUrl);
     const btn = el('adm-epAddBtn');
     btn.disabled = true; btn.textContent = 'Adding...';
     try {

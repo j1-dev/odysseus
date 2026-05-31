@@ -15,3 +15,9 @@ duckduckgo-search
 # network-served app — see ACKNOWLEDGMENTS.md. The MIT core (PDF *text*
 # extraction via pypdf) works without it; this only unlocks form-filling.
 PyMuPDF
+
+# AWS Bedrock provider (Claude / Nova / Llama / Mistral / Cohere via the
+# Converse API). boto3 picks up credentials from the standard AWS chain —
+# env vars, ~/.aws/credentials, and the SSO cache populated by
+# `aws sso login`. Endpoint URL form: bedrock://<region>[?profile=<name>].
+boto3

@@ -335,7 +335,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
                 if not ep:
                     raise HTTPException(404, "Endpoint not found or disabled")
                 base = normalize_base(ep.base_url)
-                ep_url = build_chat_url(base)
+                ep_url = build_chat_url(base, ep.api_key)
                 ep_headers = build_headers(ep.api_key, base)
                 ep_model = body.model or ""
                 if not ep_model:
@@ -371,7 +371,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
                     ).first()
                     if ep:
                         base = normalize_base(ep.base_url)
-                        ep_url = build_chat_url(base)
+                        ep_url = build_chat_url(base, ep.api_key)
                         ep_headers = build_headers(ep.api_key, base)
                         ep_model = ""
                         if ep.cached_models:
@@ -532,7 +532,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
                 ep = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True).first()
                 if ep:
                     base = normalize_base(ep.base_url)
-                    fallback_url = build_chat_url(base)
+                    fallback_url = build_chat_url(base, ep.api_key)
                     fallback_headers = build_headers(ep.api_key, base)
                     fallback_model = ""
                     if ep.cached_models:

@@ -1450,6 +1450,11 @@
                 <input id="set-agentMaxTools" type="text" inputmode="numeric" placeholder="0 = unlimited" class="settings-select" style="width:120px;">
               </div>
               <div id="set-agentMsg" style="font-size:11px;color:color-mix(in srgb, var(--fg) 45%, transparent);"></div>
+              <div class="settings-row" style="margin-top:10px;">
+                <label class="settings-label" for="set-autoAcceptEdits">Auto-accept tool actions</label>
+                <input id="set-autoAcceptEdits" type="checkbox">
+              </div>
+              <div id="set-autoAcceptMsg" style="font-size:11px;color:color-mix(in srgb, var(--fg) 45%, transparent);">When off, the agent asks before editing files or running commands.</div>
             </div>
           </div>
           <!-- Image Generation removed — only inpaint remains in this build,
@@ -2021,6 +2026,7 @@
                   <option value="https://generativelanguage.googleapis.com/v1beta/openai" data-logo="gemini">Google Gemini</option>
                   <option value="https://api.x.ai/v1" data-logo="grok">xAI Grok</option>
                   <option value="https://api.z.ai/api/paas/v4" data-logo="zhipu">Z.AI (Zhipu)</option>
+                  <option value="bedrock://us-east-1" data-logo="aws">AWS Bedrock</option>
                 </select>
                 <div class="admin-model-form-row">
                   <input id="adm-epUrl" type="text" placeholder="Base URL (e.g. https://api.example.com/v1)" style="flex:1">
