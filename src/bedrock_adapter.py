@@ -464,11 +464,15 @@ def list_models(url: str) -> List[str]:
         logger.warning(f"Bedrock list_inference_profiles failed: {e}")
 
     # 2) Bare foundation models that no profile covers (older on-demand models).
+    legacy_status = {}  # mid → True if AWS flags it legacy/retired
     try:
         control = _bedrock_control(region, profile)
         resp = control.list_foundation_models(byOutputModality="TEXT")
         for m in resp.get("modelSummaries", []) or []:
             mid = m.get("modelId") or ""
+            # modelLifecycle.status is "ACTIVE" or "LEGACY".
+            if (m.get("modelLifecycle") or {}).get("status") == "LEGACY":
+                legacy_status[mid] = True
             if not _is_chat(mid) or mid in covered_foundation:
                 continue
             out.append(mid)
@@ -477,4 +481,19 @@ def list_models(url: str) -> List[str]:
 
     # De-dup while preserving order (profiles first).
     seen = set()
-    return [x for x in out if not (x in seen or seen.add(x))]
+    deduped = [x for x in out if not (x in seen or seen.add(x))]
+
+    # Sort so a model-less endpoint auto-picks a sensible default (the picker
+    # keeps the full list, just reordered). Push AWS-flagged legacy models and
+    # the older Claude 3.x line to the back; keep stable order otherwise so
+    # inference profiles still lead.
+    def _legacy_rank(mid: str) -> int:
+        bare = mid.split(".", 1)[1] if "." in mid and mid.split(".", 1)[0] in ("eu", "us", "apac", "global") else mid
+        if legacy_status.get(bare):
+            return 2
+        # claude-3 / claude-3-5 are not flagged legacy everywhere but are old.
+        if "claude-3" in bare:
+            return 1
+        return 0
+
+    return sorted(deduped, key=lambda m: (_legacy_rank(m), deduped.index(m)))
