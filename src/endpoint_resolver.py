@@ -98,6 +98,10 @@ def resolve_url(url: str) -> str:
 def normalize_base(url: str) -> str:
     """Strip known API path suffixes from a base URL."""
     url = (url or "").strip().rstrip("/")
+    if url.startswith("bedrock://"):
+        # bedrock://<region>[?profile=...] is structurally a URL we own; do
+        # not strip path/query — the region and profile live there.
+        return url
     for suffix in ["/models", "/chat/completions", "/completions", "/v1/messages"]:
         if url.endswith(suffix):
             url = url[: -len(suffix)].rstrip("/")
@@ -113,8 +117,19 @@ def _anthropic_api_root(base: str) -> str:
     return base
 
 
-def build_chat_url(base: str) -> str:
-    """Return the correct chat endpoint URL for a given base."""
+def build_chat_url(base: str, api_key: Optional[str] = None) -> str:
+    """Return the correct chat endpoint URL for a given base.
+
+    For Bedrock, the optional `api_key` is treated as the AWS profile name
+    and folded into the URL as `?profile=...` so the adapter can read it
+    without us threading a separate value through every call site.
+    """
+    if (base or "").startswith("bedrock://"):
+        prof = (api_key or "").strip()
+        if prof and "profile=" not in (base or ""):
+            sep = "&" if "?" in base else "?"
+            return f"{base}{sep}profile={prof}"
+        return base
     base = resolve_url(base)
     provider = _detect_provider(base)
     host = urlparse(base).hostname or ""
@@ -125,9 +140,13 @@ def build_chat_url(base: str) -> str:
 
 def build_headers(api_key: Optional[str], base: str) -> Dict[str, str]:
     """Build auth headers for an endpoint."""
+    provider = _detect_provider(base)
+    if provider == "bedrock":
+        # No HTTP headers — boto3 signs requests itself. The api_key column
+        # is repurposed as the AWS profile name (read by the adapter).
+        return {}
     if not api_key:
         return {}
-    provider = _detect_provider(base)
     if provider == "anthropic":
         return {
             "x-api-key": api_key,
@@ -198,7 +217,7 @@ def resolve_endpoint(
             return fallback_url, fallback_model, fallback_headers
 
         base = normalize_base(ep.base_url)
-        chat_url = build_chat_url(base)
+        chat_url = build_chat_url(base, ep.api_key)
         headers = build_headers(ep.api_key, base)
 
         # If no model specified, try to pick the first from endpoint's cached list
@@ -237,7 +256,7 @@ def resolve_endpoint_by_id(
         if not ep:
             return None
         base = normalize_base(ep.base_url)
-        chat_url = build_chat_url(base)
+        chat_url = build_chat_url(base, ep.api_key)
         headers = build_headers(ep.api_key, base)
         m = (model or "").strip()
         if not m and getattr(ep, "models", None):

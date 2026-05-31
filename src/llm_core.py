@@ -142,7 +142,10 @@ ANTHROPIC_MODELS = [
 
 def _detect_provider(url: str) -> str:
     """Detect API provider from URL."""
-    if "anthropic.com" in (url or ""):
+    u = url or ""
+    if u.startswith("bedrock://"):
+        return "bedrock"
+    if "anthropic.com" in u:
         return "anthropic"
     return "openai"
 
@@ -150,6 +153,7 @@ def _detect_provider(url: str) -> str:
 def _provider_label(url: str) -> str:
     """Human-friendly provider name for error messages."""
     u = (url or "").lower()
+    if u.startswith("bedrock://"): return "AWS Bedrock"
     if "anthropic.com" in u: return "Anthropic"
     if "api.x.ai" in u or "x.ai/" in u: return "xAI"
     if "openai.com" in u: return "OpenAI"
@@ -367,6 +371,12 @@ def _normalize_anthropic_url(url: str) -> str:
 
 def list_model_ids(base_chat_url: str, timeout: int = LLMConfig.DEFAULT_TIMEOUT, headers: Optional[Dict] = None) -> List[str]:
     """List available model IDs from an endpoint."""
+    if _detect_provider(base_chat_url) == "bedrock":
+        try:
+            from src.bedrock_adapter import list_models as _bedrock_list
+            return _bedrock_list(base_chat_url)
+        except Exception:
+            return []
     if _detect_provider(base_chat_url) == "anthropic":
         return list(ANTHROPIC_MODELS)
     try:
@@ -430,6 +440,16 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
     if cached_response:
         logger.debug(f"Returning cached response for key: {cache_key}")
         return cached_response
+
+    if provider == "bedrock":
+        from src.bedrock_adapter import converse_sync
+        try:
+            note_model_activity(url, model)
+            response = converse_sync(url, model, messages_copy, temperature, max_tokens)
+            _set_cached_response(cache_key, response)
+            return response
+        except Exception as e:
+            raise HTTPException(502, f"Bedrock call failed: {e}")
 
     if provider == "anthropic":
         target_url = _normalize_anthropic_url(url)
@@ -538,6 +558,16 @@ async def llm_call_async(
         logger.debug(f"Returning cached response for key: {cache_key}")
         return cached_response
 
+    if provider == "bedrock":
+        from src.bedrock_adapter import converse_async
+        try:
+            note_model_activity(url, model)
+            response = await converse_async(url, model, messages_copy, temperature, max_tokens)
+            _set_cached_response(cache_key, response)
+            return response
+        except Exception as e:
+            raise HTTPException(502, f"Bedrock call failed: {e}")
+
     if provider == "anthropic":
         target_url = _normalize_anthropic_url(url)
         h = _build_anthropic_headers(headers)
@@ -629,6 +659,14 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
         messages_copy = [{"role": "system", "content": "\n\n".join(sys_parts)}] + non_sys
     else:
         messages_copy = non_sys
+
+    # ── Bedrock streaming (boto3 ConverseStream) ──
+    if provider == "bedrock":
+        from src.bedrock_adapter import stream_converse
+        note_model_activity(url, model)
+        async for chunk in stream_converse(url, model, messages_copy, temperature, max_tokens, tools=tools):
+            yield chunk
+        return
 
     if provider == "anthropic":
         target_url = _normalize_anthropic_url(url)

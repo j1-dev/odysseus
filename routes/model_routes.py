@@ -250,6 +250,19 @@ def _probe_endpoint(base_url: str, api_key: str = None, timeout: int = 5) -> Lis
     For Anthropic, queries their /v1/models API, falling back to hardcoded list."""
     from src.endpoint_resolver import resolve_url
     base = resolve_url(_normalize_base(base_url))
+    if _detect_provider(base) == "bedrock":
+        try:
+            from src.bedrock_adapter import list_models as _bedrock_list
+            # api_key is repurposed as the AWS profile name for Bedrock.
+            url_with_profile = base
+            prof = (api_key or "").strip()
+            if prof and "profile=" not in base:
+                sep = "&" if "?" in base else "?"
+                url_with_profile = f"{base}{sep}profile={prof}"
+            return _bedrock_list(url_with_profile)
+        except Exception as e:
+            logger.warning(f"Bedrock list_foundation_models failed: {e}")
+            return []
     if _detect_provider(base) == "anthropic":
         # Try Anthropic's /v1/models endpoint first
         url = _anthropic_api_root(base) + "/v1/models"
@@ -435,6 +448,8 @@ def setup_model_routes(model_discovery):
             # Build correct URL based on provider
             if provider == "anthropic":
                 chat_url = build_chat_url(base)
+            elif provider == "bedrock":
+                chat_url = build_chat_url(base, ep.api_key)
             else:
                 chat_url = base + "/chat/completions"
             category = _classify_endpoint(base)
@@ -822,15 +837,18 @@ def setup_model_routes(model_discovery):
     ):
         require_admin(request)
         base_url = base_url.strip().rstrip("/")
-        # Normalize: strip trailing /models, /chat/completions, /v1/messages etc to get clean base
-        for suffix in ["/models", "/chat/completions", "/completions", "/v1/messages"]:
-            if base_url.endswith(suffix):
-                base_url = base_url[:-len(suffix)].rstrip("/")
+        is_bedrock = base_url.startswith("bedrock://")
+        if not is_bedrock:
+            # Normalize: strip trailing /models, /chat/completions, /v1/messages etc to get clean base
+            for suffix in ["/models", "/chat/completions", "/completions", "/v1/messages"]:
+                if base_url.endswith(suffix):
+                    base_url = base_url[:-len(suffix)].rstrip("/")
         if not base_url:
             raise HTTPException(400, "Base URL is required")
-        # Resolve hostname via Tailscale if DNS fails
-        from src.endpoint_resolver import resolve_url
-        base_url = resolve_url(base_url)
+        # Resolve hostname via Tailscale if DNS fails (skip for bedrock://)
+        if not is_bedrock:
+            from src.endpoint_resolver import resolve_url
+            base_url = resolve_url(base_url)
 
         # Auto-generate name from URL if not provided
         if not name.strip():
@@ -1084,7 +1102,7 @@ def setup_model_routes(model_discovery):
             if not ep:
                 return {"endpoint_id": "", "endpoint_url": "", "model": ""}
             base = _normalize_base(ep.base_url)
-            chat_url = build_chat_url(base)
+            chat_url = build_chat_url(base, ep.api_key)
             if not model and getattr(ep, "cached_models", None):
                 try:
                     models = _json.loads(ep.cached_models) if isinstance(ep.cached_models, str) else ep.cached_models
