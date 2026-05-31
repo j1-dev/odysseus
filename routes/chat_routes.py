@@ -824,6 +824,7 @@ def setup_chat_routes(
                                     "tool_start", "tool_output", "agent_step",
                                     "doc_stream_open", "doc_stream_delta",
                                     "doc_update", "doc_suggestions", "ui_control",
+                                    "tool_progress", "permission_request", "permission_resolved",
                                 ):
                                     if data.get("type") == "agent_step":
                                         _agent_rounds = max(_agent_rounds, data.get("round", 1))
@@ -920,6 +921,26 @@ def setup_chat_routes(
         _verify_session_owner(request, session_id)
         stopped = agent_runs.stop(session_id)
         return {"stopped": stopped}
+
+    # ------------------------------------------------------------------ #
+    # POST /api/agent/permission — resolve a pending tool-permission prompt.
+    # The agent loop pauses on a mutating tool (when auto-accept is off) and
+    # emits a `permission_request` SSE event; the frontend POSTs the user's
+    # approve/deny here to wake the waiting loop.
+    # ------------------------------------------------------------------ #
+    @router.post("/api/agent/permission/{session_id}")
+    async def agent_permission(request: Request, session_id: str) -> Dict[str, Any]:
+        _verify_session_owner(request, session_id)
+        from src import agent_permissions
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        request_id = str(body.get("request_id", ""))
+        decision = "approve" if body.get("decision") == "approve" else "deny"
+        scope = "session" if body.get("scope") == "session" else "once"
+        resolved = agent_permissions.resolve(session_id, request_id, decision, scope)
+        return {"resolved": resolved, "decision": decision}
 
     # ------------------------------------------------------------------ #
     # GET /api/chat/stream_status — check if a stream is active for a session

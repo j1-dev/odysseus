@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
     openssh-client \
     gosu \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -1428,11 +1428,24 @@ async function initAgentSettings() {
   var msg = el('set-agentMsg');
   if (!toolsInput) return;
 
+  var autoAccept = el('set-autoAcceptEdits');
+
   try {
     var res = await fetch('/api/auth/settings', { credentials: 'same-origin' });
     var settings = await res.json();
     if (settings.agent_max_tool_calls) toolsInput.value = settings.agent_max_tool_calls;
   } catch (e) {}
+
+  // auto_accept_edits is a PER-USER pref (each user picks their own safety
+  // level), so it lives in /api/prefs, not the admin-only global settings.
+  if (autoAccept) {
+    try {
+      var pr = await fetch('/api/prefs/auto_accept_edits', { credentials: 'same-origin' });
+      var pj = await pr.json();
+      // Default true when unset — matches the backend default.
+      autoAccept.checked = pj.value !== false;
+    } catch (e) { autoAccept.checked = true; }
+  }
 
   async function save() {
     var val = parseInt(toolsInput.value, 10) || 0;
@@ -1449,6 +1462,17 @@ async function initAgentSettings() {
   toolsInput.addEventListener('change', save);
   var cur = parseInt(toolsInput.value, 10) || 0;
   msg.textContent = cur > 0 ? 'Limit: ' + cur + ' tool calls per message' : 'Unlimited';
+
+  if (autoAccept) {
+    autoAccept.addEventListener('change', async function() {
+      try {
+        await fetch('/api/prefs/auto_accept_edits', { method: 'PUT', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: autoAccept.checked })
+        });
+      } catch (e) {}
+    });
+  }
 }
 
 /* ═══════════════════════════════════════════
