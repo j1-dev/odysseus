@@ -306,9 +306,20 @@ async def converse_async(url: str, model: str, messages, temperature, max_tokens
 def _iter_stream_events(url: str, model: str, payload: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     """Drive bedrock-runtime.converse_stream() and yield raw event dicts.
 
+    IMPORTANT — incremental parsing: botocore's high-level ``response['stream']``
+    iterator buffers the ENTIRE HTTP body before yielding the first parsed
+    event, so tokens that the server streams over many seconds all surface at
+    once (verified: 200+ deltas with a 0.00s spread after a 10s wait). The raw
+    HTTP body, however, arrives perfectly incrementally. So we read the raw
+    stream in chunks and feed botocore's low-level ``EventStreamBuffer``
+    ourselves, decoding each message as it completes — that restores true
+    token-by-token streaming.
+
     Opening the stream (the converse_stream call) is what raises a
-    ValidationException for a rejected inferenceConfig param, so we can retry
-    it here before any events have been yielded."""
+    ValidationException for a rejected inferenceConfig param, so we retry it
+    here before any events have been yielded."""
+    from botocore.eventstream import EventStreamBuffer
+
     region, profile = parse_bedrock_url(url)
     if not region:
         raise RuntimeError("Bedrock endpoint URL must include a region, e.g. bedrock://us-east-1")
@@ -322,8 +333,37 @@ def _iter_stream_events(url: str, model: str, payload: Dict[str, Any]) -> Iterab
             if _is_validation_error(e) and _strip_rejected_param(payload, str(e)):
                 continue
             raise
-    for event in (response or {}).get("stream", []):
-        yield event
+    if not response:
+        return
+
+    raw = response["stream"]._raw_stream  # underlying HTTPResponse (streams incrementally)
+    buffer = EventStreamBuffer()
+    while True:
+        chunk = raw.read(1024)
+        if not chunk:
+            break
+        buffer.add_data(chunk)
+        for message in buffer:
+            headers = message.headers
+            msg_type = headers.get(":message-type")
+            event_type = headers.get(":event-type")
+            # Exception/error frames (throttling, validation mid-stream, etc.)
+            if msg_type == "exception" or headers.get(":exception-type"):
+                try:
+                    body = json.loads(message.payload.decode("utf-8") or "{}")
+                except Exception:
+                    body = {}
+                msg = body.get("message") or headers.get(":exception-type") or "Bedrock stream error"
+                raise RuntimeError(msg)
+            if not event_type:
+                continue
+            try:
+                body = json.loads(message.payload.decode("utf-8") or "{}")
+            except Exception:
+                body = {}
+            # Re-shape to match the high-level API dicts the consumer expects:
+            # {"contentBlockDelta": {...}}, {"messageStop": {...}}, etc.
+            yield {event_type: body}
 
 
 async def stream_converse(url: str, model: str, messages, temperature, max_tokens, tools=None):
