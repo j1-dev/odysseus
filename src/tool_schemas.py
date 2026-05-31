@@ -96,6 +96,74 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "edit_file",
+            "description": "Edit a file on disk by exact string replacement (Claude-Code style). PREFERRED over write_file for changing existing files — replaces old_string with new_string in place. old_string must match exactly (including whitespace/indentation) and be unique in the file unless replace_all=true. Use write_file only to create new files or do a full rewrite.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the file to edit"},
+                    "old_string": {"type": "string", "description": "Exact text to find (must be unique unless replace_all is true)"},
+                    "new_string": {"type": "string", "description": "Replacement text"},
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match (default false)"}
+                },
+                "required": ["path", "old_string", "new_string"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "glob",
+            "description": "Find files by glob pattern (e.g. '**/*.py', 'src/**/*.js'), returned newest-first. Use to locate files by name when you don't know exact paths.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'"},
+                    "path": {"type": "string", "description": "Directory to search from (default current directory)"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": "Search file contents with ripgrep. Returns matching lines with file paths and line numbers. Use to find where code/text lives across the codebase.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regular expression to search for"},
+                    "path": {"type": "string", "description": "File or directory to search (default current directory)"},
+                    "glob": {"type": "string", "description": "Only search files matching this glob, e.g. '*.py'"},
+                    "case_insensitive": {"type": "boolean", "description": "Case-insensitive search (default false)"},
+                    "files_with_matches": {"type": "boolean", "description": "Return only file paths that contain a match, not the lines (default false)"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_edit",
+            "description": "Edit a Jupyter notebook (.ipynb) cell. edit_mode='replace' overwrites a cell's source, 'insert' adds a new cell after cell_id (or at the top if omitted), 'delete' removes a cell. Target cells by cell_id (the cell's id field, or a 0-based index).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the .ipynb notebook file"},
+                    "new_source": {"type": "string", "description": "New cell source (for replace/insert)"},
+                    "cell_id": {"type": "string", "description": "Target cell id, or 0-based index. Omit when inserting at the top."},
+                    "edit_mode": {"type": "string", "enum": ["replace", "insert", "delete"], "description": "Edit operation (default replace)"},
+                    "cell_type": {"type": "string", "enum": ["code", "markdown"], "description": "Cell type for insert/replace (default code)"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_document",
             "description": "Create a new document in the editor panel. ALWAYS use this when the user asks to write, create, build, or generate code, scripts, programs, games, apps, or any substantial content (>15 lines). NEVER put large code blocks directly in chat — use this tool instead.",
             "parameters": {
@@ -1049,6 +1117,11 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         content = args.get("path", "")
     elif tool_type == "write_file":
         content = args.get("path", "") + "\n" + args.get("content", "")
+    elif tool_type in ("edit_file", "glob", "grep", "notebook_edit"):
+        # These tools parse their args as a JSON blob (see do_edit_file /
+        # do_glob / do_grep / do_notebook_edit), so pass the structured
+        # args straight through.
+        content = json.dumps(args)
     elif tool_type == "create_document":
         parts = [args.get("title", "Untitled")]
         if args.get("language"):

@@ -5,6 +5,7 @@ Extracted tool implementation functions (do_* and helpers) from agent_tools.py.
 These handle the actual execution logic for each tool type.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -4033,3 +4034,265 @@ async def do_vault_unlock(content: str, owner: Optional[str] = None) -> Dict:
         pass
 
     return {"output": "Vault unlocked. Session saved.", "exit_code": 0}
+
+
+# ---------------------------------------------------------------------------
+# Claude-Code-style code tools — surgical edit, glob, grep
+# ---------------------------------------------------------------------------
+# These complement read_file / write_file / bash / python to give the agent
+# the same code-editing toolkit Claude Code exposes: exact string-replacement
+# editing (cheaper + safer than rewriting whole files), fast filename globbing,
+# and ripgrep-backed content search.
+
+
+async def do_edit_file(content: str, owner: Optional[str] = None) -> Dict:
+    """Surgical find-and-replace edit on a file on disk.
+
+    Mirrors Claude Code's Edit tool: replace an exact `old_string` with
+    `new_string`. The match must be unique unless `replace_all` is set,
+    so an ambiguous edit fails loudly rather than silently changing the
+    wrong occurrence. Use write_file for whole-file rewrites and new files.
+    """
+    try:
+        args = _parse_tool_args(content)
+    except ValueError:
+        return {"error": "edit_file: invalid JSON arguments", "exit_code": 1}
+
+    path = (args.get("path") or args.get("file_path") or "").strip()
+    old_string = args.get("old_string", "")
+    new_string = args.get("new_string", "")
+    replace_all = bool(args.get("replace_all", False))
+
+    if not path:
+        return {"error": "edit_file: path required", "exit_code": 1}
+    if old_string == "":
+        return {"error": "edit_file: old_string required (use write_file to create a new file)", "exit_code": 1}
+    if old_string == new_string:
+        return {"error": "edit_file: old_string and new_string are identical", "exit_code": 1}
+
+    def _apply():
+        with open(path, "r", encoding="utf-8") as f:
+            data = f.read()
+        count = data.count(old_string)
+        if count == 0:
+            return None, 0
+        if count > 1 and not replace_all:
+            return data, count  # ambiguous — signal back without writing
+        updated = data.replace(old_string, new_string)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+        return updated, count
+
+    try:
+        result, count = await asyncio.to_thread(_apply)
+    except FileNotFoundError:
+        return {"error": f"edit_file: {path}: not found", "exit_code": 1}
+    except PermissionError:
+        return {"error": f"edit_file: {path}: permission denied", "exit_code": 1}
+    except (OSError, UnicodeDecodeError) as e:
+        return {"error": f"edit_file: {path}: {e}", "exit_code": 1}
+
+    if count == 0:
+        return {"error": f"edit_file: old_string not found in {path}", "exit_code": 1}
+    if count > 1 and not replace_all:
+        return {
+            "error": (
+                f"edit_file: old_string is not unique in {path} ({count} matches). "
+                "Add surrounding context to make it unique, or set replace_all=true."
+            ),
+            "exit_code": 1,
+        }
+    return {"output": f"Edited {path} ({count} replacement{'s' if count != 1 else ''})", "exit_code": 0}
+
+
+async def do_glob(content: str, owner: Optional[str] = None) -> Dict:
+    """Find files matching a glob pattern (e.g. '**/*.py'), newest first."""
+    try:
+        args = _parse_tool_args(content)
+    except ValueError:
+        # Allow a bare pattern string as a convenience.
+        args = {"pattern": content.strip()}
+
+    pattern = (args.get("pattern") or "").strip()
+    base = (args.get("path") or ".").strip() or "."
+    if not pattern:
+        return {"error": "glob: pattern required", "exit_code": 1}
+
+    def _search():
+        from pathlib import Path
+        root = Path(base)
+        if not root.exists():
+            return None
+        matches = [p for p in root.glob(pattern) if p.is_file()]
+        # Sort by mtime descending so the most relevant files surface first.
+        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return [str(p) for p in matches]
+
+    try:
+        files = await asyncio.to_thread(_search)
+    except OSError as e:
+        return {"error": f"glob: {e}", "exit_code": 1}
+
+    if files is None:
+        return {"error": f"glob: path not found: {base}", "exit_code": 1}
+    if not files:
+        return {"output": f"No files matching '{pattern}' under {base}", "exit_code": 0}
+
+    capped = files[:200]
+    body = "\n".join(capped)
+    if len(files) > len(capped):
+        body += f"\n... ({len(files)} matches total, showing first {len(capped)})"
+    return {"output": body, "exit_code": 0}
+
+
+async def do_grep(content: str, owner: Optional[str] = None) -> Dict:
+    """Search file contents with ripgrep. Returns matching lines with paths."""
+    try:
+        args = _parse_tool_args(content)
+    except ValueError:
+        args = {"pattern": content.strip()}
+
+    pattern = args.get("pattern", "")
+    if not pattern:
+        return {"error": "grep: pattern required", "exit_code": 1}
+
+    path = (args.get("path") or ".").strip() or "."
+    glob_filter = (args.get("glob") or "").strip()
+    case_insensitive = bool(args.get("case_insensitive", False))
+    files_only = bool(args.get("files_with_matches", False))
+
+    cmd = ["rg", "--line-number", "--no-heading", "--color=never"]
+    if case_insensitive:
+        cmd.append("--ignore-case")
+    if files_only:
+        cmd = ["rg", "--files-with-matches", "--color=never"]
+        if case_insensitive:
+            cmd.append("--ignore-case")
+    if glob_filter:
+        cmd += ["--glob", glob_filter]
+    cmd += ["--", pattern, path]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except FileNotFoundError:
+        return {"error": "grep: ripgrep (rg) is not installed on the server", "exit_code": 1}
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return {"error": "grep: search timed out after 30s", "exit_code": 124}
+
+    stdout = stdout_b.decode("utf-8", errors="replace")
+    stderr = stderr_b.decode("utf-8", errors="replace")
+
+    # rg exit code 1 == no matches (not an error); 2+ == real error.
+    if proc.returncode == 1 and not stdout:
+        return {"output": f"No matches for '{pattern}' in {path}", "exit_code": 0}
+    if proc.returncode not in (0, 1):
+        return {"error": f"grep: {stderr.strip() or 'ripgrep failed'}", "exit_code": proc.returncode or 2}
+
+    return {"output": _truncate(stdout.rstrip(), MAX_OUTPUT_CHARS) or "(no output)", "exit_code": 0}
+
+
+async def do_notebook_edit(content: str, owner: Optional[str] = None) -> Dict:
+    """Edit a Jupyter notebook (.ipynb) cell — replace, insert, or delete.
+
+    Mirrors Claude Code's NotebookEdit. `cell_id` targets a cell by its
+    id (or 0-based index as a fallback); `edit_mode` is replace|insert|delete.
+    For insert, the new cell is added after cell_id (or at the top if omitted).
+    """
+    try:
+        args = _parse_tool_args(content)
+    except ValueError:
+        return {"error": "notebook_edit: invalid JSON arguments", "exit_code": 1}
+
+    path = (args.get("path") or args.get("notebook_path") or "").strip()
+    cell_id = args.get("cell_id")
+    source = args.get("new_source", args.get("source", ""))
+    edit_mode = (args.get("edit_mode") or "replace").strip().lower()
+    cell_type = (args.get("cell_type") or "code").strip().lower()
+
+    if not path:
+        return {"error": "notebook_edit: path required", "exit_code": 1}
+    if edit_mode not in ("replace", "insert", "delete"):
+        return {"error": "notebook_edit: edit_mode must be replace, insert, or delete", "exit_code": 1}
+    if cell_type not in ("code", "markdown"):
+        return {"error": "notebook_edit: cell_type must be code or markdown", "exit_code": 1}
+
+    def _locate(cells, cid):
+        """Return the index of the cell matching cid (by 'id' field, else
+        numeric index), or None."""
+        if cid is None:
+            return None
+        for idx, c in enumerate(cells):
+            if str(c.get("id", "")) == str(cid):
+                return idx
+        # Fallback: treat cid as a 0-based index.
+        try:
+            i = int(cid)
+            if 0 <= i < len(cells):
+                return i
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def _apply():
+        with open(path, "r", encoding="utf-8") as f:
+            nb = json.load(f)
+        cells = nb.setdefault("cells", [])
+
+        if edit_mode == "delete":
+            idx = _locate(cells, cell_id)
+            if idx is None:
+                return None, "cell not found"
+            cells.pop(idx)
+            note = f"deleted cell {cell_id}"
+        elif edit_mode == "insert":
+            new_cell = {
+                "cell_type": cell_type,
+                "metadata": {},
+                "source": source.splitlines(keepends=True) or [source],
+            }
+            if cell_type == "code":
+                new_cell["outputs"] = []
+                new_cell["execution_count"] = None
+            idx = _locate(cells, cell_id)
+            insert_at = (idx + 1) if idx is not None else 0
+            cells.insert(insert_at, new_cell)
+            note = f"inserted {cell_type} cell at position {insert_at}"
+        else:  # replace
+            idx = _locate(cells, cell_id)
+            if idx is None:
+                return None, "cell not found"
+            cell = cells[idx]
+            cell["source"] = source.splitlines(keepends=True) or [source]
+            if cell_type and cell.get("cell_type") != cell_type:
+                cell["cell_type"] = cell_type
+            if cell.get("cell_type") == "code":
+                cell["outputs"] = []
+                cell["execution_count"] = None
+            note = f"replaced cell {cell_id}"
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(nb, f, indent=1)
+            f.write("\n")
+        return note, None
+
+    try:
+        note, err = await asyncio.to_thread(_apply)
+    except FileNotFoundError:
+        return {"error": f"notebook_edit: {path}: not found", "exit_code": 1}
+    except json.JSONDecodeError as e:
+        return {"error": f"notebook_edit: {path}: not a valid .ipynb (JSON error: {e})", "exit_code": 1}
+    except (OSError, KeyError, AttributeError) as e:
+        return {"error": f"notebook_edit: {path}: {e}", "exit_code": 1}
+
+    if err:
+        return {"error": f"notebook_edit: {err} (cell_id={cell_id})", "exit_code": 1}
+    return {"output": f"Notebook {path}: {note}", "exit_code": 0}

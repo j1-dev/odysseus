@@ -33,6 +33,7 @@ from src.agent_tools import (
     ToolBlock,
     MAX_AGENT_ROUNDS,
 )
+from src import agent_permissions as _perm
 
 logger = logging.getLogger(__name__)
 
@@ -1248,6 +1249,17 @@ async def stream_agent_loop(
     mcp_mgr = get_mcp_manager()
     prep_timings: Dict[str, float] = {}
     disabled_tools = set(disabled_tools or [])
+
+    # Permission gate: when off, mutating tools pause for user confirmation.
+    # Read once per run (per-user setting, global fallback). Teacher runs and
+    # runs without a session_id can't round-trip a prompt, so they auto-accept.
+    try:
+        from src.settings import get_user_setting
+        _auto_accept_edits = bool(get_user_setting("auto_accept_edits", owner=owner or "", default=True))
+    except Exception:
+        _auto_accept_edits = True
+    if _is_teacher_run or not session_id:
+        _auto_accept_edits = True
     public_blocked_tools = blocked_tools_for_owner(owner)
     if public_blocked_tools:
         disabled_tools.update(public_blocked_tools)
@@ -1878,6 +1890,62 @@ async def stream_agent_loop(
             yield (
                 f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "round": round_num})}\n\n'
             )
+
+            # --- Permission gate -------------------------------------------
+            # When auto-accept is off, pause before any world-mutating tool
+            # (edit_file/write_file/notebook_edit/bash/python) and wait for the
+            # user to approve or deny. A prior "approve for this run" grant or a
+            # missing session_id (can't round-trip) skips the prompt.
+            if (
+                not _auto_accept_edits
+                and session_id
+                and block.tool_type in _perm.GATED_TOOLS
+                and not _perm.has_session_grant(session_id)
+            ):
+                _req_id = f"{session_id}:{round_num}:{i}:{total_tool_calls}"
+                _pending = _perm.create(session_id, _req_id)
+                yield (
+                    'data: ' + json.dumps({
+                        "type": "permission_request",
+                        "request_id": _req_id,
+                        "tool": block.tool_type,
+                        "command": cmd_display,
+                        "round": round_num,
+                    }) + '\n\n'
+                )
+                _decision = await _perm.wait_for_decision(session_id, _pending)
+                yield (
+                    'data: ' + json.dumps({
+                        "type": "permission_resolved",
+                        "request_id": _req_id,
+                        "tool": block.tool_type,
+                        "decision": _decision,
+                    }) + '\n\n'
+                )
+                if _decision != "approve":
+                    # Denied: synthesize a tool result so the model sees the
+                    # refusal and can adapt, then skip execution entirely.
+                    desc = f"{block.tool_type}: denied by user"
+                    result = {"error": "User denied permission to run this tool.", "exit_code": 1}
+                    _denied_text = (
+                        f"### {desc}\n**Error:** User denied permission to run this tool. "
+                        "Do not retry it; continue without it or ask the user how to proceed."
+                    )
+                    yield (
+                        'data: ' + json.dumps({
+                            "type": "tool_output", "tool": block.tool_type,
+                            "command": cmd_display, "output": "Denied by user.",
+                            "exit_code": 1,
+                        }) + '\n\n'
+                    )
+                    tool_events.append({
+                        "round": round_num, "tool": block.tool_type,
+                        "command": cmd_display, "output": "Denied by user.",
+                        "exit_code": 1,
+                    })
+                    tool_results.append(_denied_text)
+                    tool_result_texts.append(_denied_text)
+                    continue
 
             # Streaming progress for long-running tools (bash, python).
             # The bash/python branches inside _direct_fallback emit

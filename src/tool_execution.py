@@ -502,6 +502,7 @@ async def execute_tool_block(
         do_manage_contact,
         do_vault_search, do_vault_get, do_vault_unlock,
         do_app_api,
+        do_edit_file, do_glob, do_grep, do_notebook_edit,
     )
 
     tool = block.tool_type
@@ -671,6 +672,19 @@ async def execute_tool_block(
     elif tool == "list_cached_models":
         desc = "list_cached_models"
         result = await do_list_cached_models(content, owner=owner)
+    elif tool == "edit_file":
+        first_line = content.split(chr(10))[0][:60]
+        desc = f"edit_file: {first_line}"
+        result = await do_edit_file(content, owner=owner)
+    elif tool == "glob":
+        desc = f"glob: {content.split(chr(10))[0][:60]}"
+        result = await do_glob(content, owner=owner)
+    elif tool == "grep":
+        desc = f"grep: {content.split(chr(10))[0][:60]}"
+        result = await do_grep(content, owner=owner)
+    elif tool == "notebook_edit":
+        desc = f"notebook_edit: {content.split(chr(10))[0][:60]}"
+        result = await do_notebook_edit(content, owner=owner)
     elif tool == "app_api":
         desc = "app_api"
         result = await do_app_api(content, owner=owner)

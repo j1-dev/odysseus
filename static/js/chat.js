@@ -1048,6 +1048,61 @@ import createResearchSynapse from './researchSynapse.js';
         uiModule.scrollHistory();
       }
 
+      // --- Tool-permission prompt (auto-accept off) ---------------------
+      // Render an inline approve/deny card when the agent pauses on a
+      // mutating tool, and POST the decision back to wake the server loop.
+      function _showPermissionPrompt(json, sid) {
+        // Replace any existing prompt (one pending request at a time).
+        const existing = document.getElementById('perm-prompt');
+        if (existing) existing.remove();
+        const chatBox = document.getElementById('chat-history');
+        const wrap = document.createElement('div');
+        wrap.id = 'perm-prompt';
+        wrap.className = 'agent-perm-prompt';
+        wrap.dataset.requestId = json.request_id;
+        wrap.style.cssText = 'border:1px solid var(--border,#444);border-radius:8px;padding:10px 12px;margin:6px 0;background:rgba(255,180,0,0.08);font-size:13px;';
+        const toolLabel = (_toolLabels[(json.tool || '').toLowerCase()] || json.tool || 'tool');
+        const cmd = json.command || '';
+        const cmdHtml = cmd ? `<pre style="margin:6px 0;padding:6px 8px;background:rgba(0,0,0,0.18);border-radius:4px;max-height:120px;overflow:auto;white-space:pre-wrap;">${esc(cmd)}</pre>` : '';
+        wrap.innerHTML =
+          `<div style="font-weight:600;margin-bottom:2px;">⚠ Allow <code>${esc(json.tool || '')}</code>?</div>` +
+          `<div style="opacity:0.8;">The agent wants to run a tool that can change files or your system.</div>` +
+          cmdHtml +
+          `<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">` +
+            `<button class="perm-btn perm-approve" style="padding:4px 12px;cursor:pointer;">Allow</button>` +
+            `<button class="perm-btn perm-approve-all" style="padding:4px 12px;cursor:pointer;">Allow for this chat</button>` +
+            `<button class="perm-btn perm-deny" style="padding:4px 12px;cursor:pointer;">Deny</button>` +
+          `</div>`;
+        chatBox.appendChild(wrap);
+        const send = (decision, scope) => {
+          wrap.querySelectorAll('button').forEach(b => { b.disabled = true; });
+          _resolvePermission(sid, json.request_id, decision, scope);
+        };
+        wrap.querySelector('.perm-approve').addEventListener('click', () => send('approve', 'once'));
+        wrap.querySelector('.perm-approve-all').addEventListener('click', () => send('approve', 'session'));
+        wrap.querySelector('.perm-deny').addEventListener('click', () => send('deny', 'once'));
+      }
+
+      async function _resolvePermission(sid, requestId, decision, scope) {
+        try {
+          await fetch(`${API_BASE}/api/agent/permission/${encodeURIComponent(sid)}`, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ request_id: requestId, decision, scope }),
+          });
+        } catch (_) { /* the server-side timeout will deny if this never lands */ }
+      }
+
+      function _resolvePermissionPrompt(requestId, decision) {
+        const wrap = document.getElementById('perm-prompt');
+        if (!wrap || (requestId && wrap.dataset.requestId !== requestId)) return;
+        const label = decision === 'approve' ? 'Allowed' : 'Denied';
+        wrap.innerHTML = `<div style="opacity:0.7;font-style:italic;">${label} — ${esc(wrap.querySelector('code') ? '' : '')}tool decision recorded.</div>`;
+        wrap.style.background = 'transparent';
+        wrap.removeAttribute('id');  // free the id so the next prompt is fresh
+        setTimeout(() => { try { wrap.remove(); } catch (_) {} }, 4000);
+      }
+
       // Auto-show thinking spinner after text stops streaming
       let _textPauseTimer = null;
       function _scheduleThinkingSpinner() {
@@ -2210,6 +2265,20 @@ import createResearchSynapse from './researchSynapse.js';
                 }
                 if (streamingTTS) window.aiTTSManager._streamSentencesSent = 0;
                 uiModule.scrollHistory();
+              } else if (json.type === 'permission_request') {
+                if (_isBg) continue;
+                _cancelThinkingTimer();
+                _removeThinkingSpinner();
+                _renderStream();
+                _showPermissionPrompt(json, streamSessionId);
+                uiModule.scrollHistory();
+
+              } else if (json.type === 'permission_resolved') {
+                if (_isBg) continue;
+                // The decision came through (from this tab or another) — tear
+                // down the prompt UI and show what was decided.
+                _resolvePermissionPrompt(json.request_id, json.decision);
+
               } else if (json.type === 'budget_exceeded') {
                 if (_isBg) continue;
                 _cancelThinkingTimer();
