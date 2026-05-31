@@ -567,6 +567,11 @@ def setup_chat_routes(
                         prior_findings=_prior_findings,
                         prior_urls=_prior_urls,
                         on_complete=_on_research_done,
+                        # Stamp ownership so /status, /result, and the Library
+                        # recognize this user as the owner. Without it the entry
+                        # and saved JSON get owner="" → 404 on status polls and
+                        # the report never appears in the Research Library.
+                        owner=_user,
                     )
 
                     _heartbeat_counter = 0

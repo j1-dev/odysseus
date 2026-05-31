@@ -26,6 +26,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional: AWS Bedrock provider. boto3 isn't in requirements.txt because
+# most users don't need it; ship it in the image so the Bedrock adapter
+# works out of the box for those who do.
+RUN pip install --no-cache-dir boto3
+
 # Copy app code
 COPY . .
 

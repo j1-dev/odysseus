@@ -1086,9 +1086,67 @@ import createResearchSynapse from './researchSynapse.js';
         return (text || '').slice(last.index + last[0].length).trimStart();
       }
 
-      // Direct render helper for streaming text
-      function _renderStream() {
-        let dt = stripToolBlocks(roundText);
+      // ── Paced reveal ─────────────────────────────────────────────────────
+      // Providers (and boto3's Bedrock event stream) deliver tokens in uneven
+      // bursts — a whole sentence can land in one chunk, which reads as jerky.
+      // We decouple *display* from *arrival*: the network keeps appending to
+      // roundText, while a rAF loop advances a `_paceShown` cursor toward the
+      // full length at an adaptive rate. Adaptive = drain the backlog over a
+      // fixed rolling window, so a big burst reveals quickly and a trickle
+      // stays gentle — never lagging a fast model, never stalling on a slow one.
+      const _paceReduced = window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const _PACE_WINDOW_MS = 220;   // target time to drain the current backlog
+      const _PACE_MIN_CPS = 30;      // floor chars/sec so short tails don't crawl
+      let _paceShown = 0;            // chars currently revealed
+      let _paceRendered = -1;        // length last actually painted (skip redundant renders)
+      let _paceRAF = 0;              // active rAF handle (0 = idle)
+      let _paceLastTs = 0;           // timestamp of previous frame
+
+      function _paceTick(ts) {
+        _paceRAF = 0;
+        const target = roundText.length;
+        if (_paceShown >= target) { _paceLastTs = 0; return; }
+        const dtMs = _paceLastTs ? Math.max(0, ts - _paceLastTs) : 16;
+        _paceLastTs = ts;
+        const backlog = target - _paceShown;
+        // Reveal backlog over _PACE_WINDOW_MS, but never slower than the floor.
+        const cps = Math.max(_PACE_MIN_CPS, backlog * 1000 / _PACE_WINDOW_MS);
+        const advance = Math.max(1, Math.round(cps * dtMs / 1000));
+        _paceShown = Math.min(target, _paceShown + advance);
+        // Slicing mid-tag/mid-word is fine: _renderStream re-parses markdown each
+        // call and the next frame extends it. Skip the (expensive) render when the
+        // revealed length didn't change, e.g. floor rate rounding to <1 char.
+        if (_paceShown !== _paceRendered) {
+          _paceRendered = _paceShown;
+          _renderStream(roundText.slice(0, _paceShown));
+        }
+        if (_paceShown < target) _paceRAF = requestAnimationFrame(_paceTick);
+        else _paceLastTs = 0;
+      }
+
+      // Feed newly-arrived text into the pacer. Reduced-motion users get the
+      // full text immediately (no animation).
+      function _paceFeed() {
+        if (_paceReduced) { _paceShown = roundText.length; _renderStream(); return; }
+        if (!_paceRAF) { _paceLastTs = 0; _paceRAF = requestAnimationFrame(_paceTick); }
+      }
+
+      // Reveal everything now and stop the loop. Called at [DONE]/error/cancel
+      // and before any final render so the bubble shows the complete reply.
+      function _paceFlush() {
+        if (_paceRAF) { cancelAnimationFrame(_paceRAF); _paceRAF = 0; }
+        _paceShown = roundText.length;
+        _paceRendered = _paceShown;
+        _paceLastTs = 0;
+      }
+
+      // Direct render helper for streaming text.
+      // `textOverride` lets the paced reveal feed a sliced prefix of roundText
+      // so display rate is decoupled from bursty network arrival; when omitted
+      // it renders the full accumulated roundText (used by final/transition renders).
+      function _renderStream(textOverride) {
+        let dt = stripToolBlocks(textOverride != null ? textOverride : roundText);
         const bodyEl = roundHolder.querySelector('.body');
         const contentEl = _ensureStreamLayout(bodyEl);
 
@@ -1577,12 +1635,13 @@ import createResearchSynapse from './researchSynapse.js';
                     _streamEl.appendChild(_replyEl);
                   }
 
-                  // Render any reply text that arrived with the closing </think> token
-                  _renderStream();
+                  // Render any reply text that arrived with the closing </think>
+                  // token — paced so it flows in smoothly like normal streaming.
+                  _paceFeed();
                 } else {
-                  // Normal streaming
+                  // Normal streaming — paced reveal smooths bursty arrival.
                   if (spinner && spinner.element) spinner.destroy();
-                  _renderStream();
+                  _paceFeed();
                   _scheduleThinkingSpinner();
                   // Feed streaming TTS with accumulated text
                   if (streamingTTS) window.aiTTSManager.streamingUpdate(roundText);
@@ -2222,6 +2281,9 @@ import createResearchSynapse from './researchSynapse.js';
         }
       }
 
+      // Stop the paced reveal and render the complete text — the final-render
+      // block below reads roundText directly, so the bubble must show all of it.
+      _paceFlush();
       _renderStream();
       _cancelThinkingTimer();
       _removeThinkingSpinner();
@@ -2488,6 +2550,7 @@ import createResearchSynapse from './researchSynapse.js';
       } // end if (!_isBgFinal)
 
     } catch (err) {
+      _paceFlush();
       _renderStream();
       // Clean up any active spinner (e.g. "Generating response" during tool calls)
       if (spinner && spinner.element) spinner.destroy();
@@ -2660,6 +2723,9 @@ import createResearchSynapse from './researchSynapse.js';
         }
       }
     } finally {
+      // Backstop: ensure the paced-reveal rAF can never leak past this stream
+      // (e.g. user cancels mid-reveal, or an early return skips the flushes above).
+      _paceFlush();
       clearProcessingProbe();
       // Always clean up research tracking regardless of background state
       _researchingStreamIds.delete(streamSessionId);
