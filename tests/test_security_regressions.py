@@ -96,6 +96,11 @@ def test_secret_storage_corrupt_token_returns_empty(tmp_path, monkeypatch):
     assert ss.decrypt("enc:not-a-valid-fernet-token") == ""
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits (0o600) don't exist on Windows; the key file is "
+    "protected by the user-profile NTFS ACL instead, and safe_chmod no-ops there.",
+)
 def test_secret_storage_key_created_with_safe_mode(tmp_path, monkeypatch):
     """The auto-generated key file must be mode 0o600 — anyone who can
     read it can decrypt every stored secret."""
@@ -298,6 +303,26 @@ def test_require_admin_allows_when_auth_explicitly_disabled(monkeypatch):
         app = _App()
 
     assert require_admin(_Req()) is None
+
+
+def test_internal_tool_owner_header_logic_requires_known_user():
+    """Pin the owner-attribution branch used by app.AuthMiddleware without
+    booting the full FastAPI app."""
+    users = {
+        "alice": {"is_admin": False},
+        "AdminUser": {"is_admin": True},
+    }
+
+    def resolve_owner(header_value):
+        impersonate = (header_value or "").strip()
+        if impersonate and impersonate in users:
+            return impersonate
+        return "internal-tool"
+
+    assert resolve_owner("alice") == "alice"
+    assert resolve_owner("AdminUser") == "AdminUser"
+    assert resolve_owner("doesnotexist") == "internal-tool"
+    assert resolve_owner("") == "internal-tool"
 
 
 def test_auth_manager_migrates_legacy_admin_role(tmp_path):
