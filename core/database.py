@@ -298,6 +298,7 @@ class EmailAccount(TimestampMixin, Base):
     # SMTP (sending)
     smtp_host      = Column(String, default="")
     smtp_port      = Column(Integer, default=465)
+    smtp_security  = Column(String, default="ssl")  # ssl | starttls | none
     smtp_user      = Column(String, default="")
     smtp_password  = Column(String, default="")
 
@@ -1517,12 +1518,39 @@ def init_db():
     _migrate_drop_ping_notes_tasks()
     _migrate_add_crew_member_id()
     _migrate_add_assistant_columns()
+    _migrate_add_email_smtp_security()
     _migrate_seed_email_account()
     _migrate_add_calendar_metadata()
     _migrate_add_calendar_is_utc()
     _migrate_encrypt_email_passwords()
     _migrate_encrypt_signatures()
     _migrate_encrypt_endpoint_keys()
+
+
+def _migrate_add_email_smtp_security():
+    """Add explicit SMTP security mode for Proton Bridge/custom local SMTP."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(email_accounts)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "smtp_security" not in columns:
+            conn.execute("ALTER TABLE email_accounts ADD COLUMN smtp_security TEXT DEFAULT 'ssl'")
+            conn.execute(
+                "UPDATE email_accounts SET smtp_security = CASE "
+                "WHEN COALESCE(smtp_port, 465) = 587 THEN 'starttls' "
+                "WHEN COALESCE(smtp_port, 465) = 465 THEN 'ssl' "
+                "ELSE 'ssl' END "
+                "WHERE smtp_security IS NULL OR smtp_security = ''"
+            )
+            conn.commit()
+            logging.getLogger(__name__).info("Migrated: added smtp_security column to email_accounts")
+        conn.close()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"smtp_security migration skipped: {e}")
 
 
 def _migrate_encrypt_endpoint_keys():
@@ -1786,6 +1814,32 @@ def get_session_by_id(session_id: str):
     """Get a session by ID"""
     with get_db_session() as db:
         return db.query(Session).filter(Session.id == session_id).first()
+
+def get_upcoming_events(owner, horizon_days: int = 60, limit: int = 40):
+    """Upcoming, non-cancelled events as {uid, title, start} dicts, soonest first.
+
+    owner=None means NO owner scoping (single-user / legacy). Multi-user callers
+    MUST pass the owning username — otherwise they read every tenant's events.
+    The autonomous email->calendar pass relies on this to avoid disclosing (and
+    acting on) other users' calendars."""
+    from datetime import timedelta
+    now = datetime.utcnow()
+    with get_db_session() as db:
+        q = db.query(CalendarEvent).join(CalendarCal).filter(
+            CalendarEvent.dtstart >= now,
+            CalendarEvent.dtstart <= now + timedelta(days=horizon_days),
+            CalendarEvent.status != "cancelled",
+        )
+        if owner is not None:
+            q = q.filter(CalendarCal.owner == owner)
+        return [
+            {
+                "uid": e.uid,
+                "title": e.summary or "",
+                "start": e.dtstart.isoformat() if e.dtstart else "",
+            }
+            for e in q.order_by(CalendarEvent.dtstart).limit(limit).all()
+        ]
 
 def archive_session(session_id: str):
     """Archive a session"""

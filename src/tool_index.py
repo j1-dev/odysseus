@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Tools that are ALWAYS included regardless of retrieval results.
 # These are the most commonly needed and should never be missing.
 ALWAYS_AVAILABLE = frozenset({
-    "bash", "python", "web_search", "read_file",
+    "bash", "python", "web_search", "web_fetch", "read_file",
     # Claude-Code-style code tools — always in reach so coding tasks can
     # search, locate, and surgically edit files without a keyword nudge.
     "write_file", "edit_file", "glob", "grep",
@@ -65,6 +65,7 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "bash": "Run shell commands on the server. Install packages, check files, git operations, curl, system info, process management, networking.",
     "python": "Execute Python code for computation, data processing, math, scripting, parsing, API calls. Not for writing code for the user.",
     "web_search": "Quick single web lookup for a fact, current event, or doc mid-task. NOT for 'research X' / 'do research on X' requests — those are deep-research jobs (use trigger_research). web_search = one query; trigger_research = a full researched report in the sidebar.",
+    "web_fetch": "Fetch and read the text content of a specific URL/website the user names (e.g. 'check example.com', 'open this link'). Use when you have a concrete URL; for open-ended lookups use web_search instead.",
     "read_file": "Read a file from disk and return its contents. View source code, config files, logs.",
     "write_file": "Write content to a file on disk. Create new files, save output, update configs. For changing part of an existing file, prefer edit_file.",
     "edit_file": "Edit a file on disk by exact string replacement (Claude-Code style). Replace old_string with new_string in place — the preferred way to modify existing source files, configs, and scripts. Use for fixing bugs, renaming, adding lines to files on disk.",
